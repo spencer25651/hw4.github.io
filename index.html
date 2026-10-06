@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <title>UNM CS 412/512 HW4 - Hierarchical Robot Arm</title>
+  <style>
+    body {
+      background: #111;
+      color: #ccc;
+      font-family: monospace;
+    }
+
+    textarea {
+      background: #222;
+      color: #0f0;
+      font: 14px monospace;
+      width: 400px;
+      height: 250px;
+    }
+
+    canvas {
+      border: 1px solid #444;
+    }
+
+    #controls {
+      width: 260px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      background: #1a1a1a;
+      border: 1px solid #444;
+      padding: 10px;
+      box-sizing: border-box;
+    }
+
+    #controls h3 {
+      margin: 0 0 4px 0;
+      color: #9cf;
+      font-size: 13px;
+      border-bottom: 1px solid #444;
+      padding-bottom: 4px;
+    }
+
+    #controls label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      margin-bottom: 2px;
+    }
+
+    #controls .lvl {
+      color: #6a6;
+      font-size: 10px;
+    }
+
+    #controls input[type=range] {
+      width: 100%;
+    }
+
+    #controls button {
+      width: 100%;
+      background: #222;
+      color: #ccc;
+      border: 1px solid #555;
+      font-family: monospace;
+      font-size: 12px;
+      padding: 5px;
+      cursor: pointer;
+      margin-top: 2px;
+    }
+
+    #controls button:hover {
+      background: #333;
+    }
+
+    #controls button.active {
+      background: #2a4;
+      color: #111;
+      border-color: #2a4;
+    }
+
+    hr {
+      border: none;
+      border-top: 1px solid #444;
+      margin: 4px 0;
+    }
+  </style>
+</head>
+
+<body>
+  <h2>HW4: Hierarchical Robot Arm</h2>
+  <p>A chained hierarchy: <b>Base &rarr; Shoulder/Lower Arm &rarr; Elbow/Upper Arm &rarr; Wrist &rarr; Gripper
+      Fingers</b> (6 levels).<br>
+    Drag each slider below to pose the arm - every joint carries all of its children with it.<br>
+    Use mouse to drag and rotate the view. Use arrow keys and w, s to move the camera.<br>
+    Press F12 to see the console for debugging.</p>
+
+  <div style="display: flex; gap: 10px; align-items: flex-start;">
+    <div style="display: flex; flex-direction: column; gap: 10px;">
+      <div>
+        <b>Vertex Shader</b><br>
+        <textarea id="vertEditor"></textarea>
+      </div>
+      <div>
+        <b>Fragment Shader</b><br>
+        <textarea id="fragEditor"></textarea>
+      </div>
+    </div>
+    <div>
+      <canvas id="glcanvas" width="440" height="440"></canvas>
+    </div>
+
+    <div id="controls">
+      <h3>Joint Controls</h3>
+
+      <label>Base swivel <span class="lvl">L1</span></label>
+      <input type="range" id="jBase" min="-180" max="180" step="1" value="0">
+
+      <label>Shoulder pitch <span class="lvl">L2</span></label>
+      <input type="range" id="jShoulder" min="-90" max="90" step="1" value="25">
+
+      <label>Elbow pitch <span class="lvl">L3</span></label>
+      <input type="range" id="jElbow" min="-150" max="10" step="1" value="-60">
+
+      <label>Wrist pitch <span class="lvl">L4</span></label>
+      <input type="range" id="jWristPitch" min="-90" max="90" step="1" value="20">
+
+      <label>Wrist roll <span class="lvl">L4</span></label>
+      <input type="range" id="jWristRoll" min="-180" max="180" step="1" value="0">
+
+      <label>Gripper open <span class="lvl">L5/L6</span></label>
+      <input type="range" id="jGripper" min="0" max="100" step="1" value="40">
+
+      <hr>
+      <h3>Demo</h3>
+      <button id="animateBtn">Auto-Wave Animation</button>
+      <button id="resetBtn">Reset Pose</button>
+
+      <hr>
+      <h3>View</h3>
+      <button id="projToggleBtn">Toggle Perspective / Ortho</button>
+    </div>
+  </div>
+
+  <!-- Vertex shader (unchanged from HW3) -->
+  <script id="vertex-shader" type="x-shader/x-vertex">#version 300 es
+in vec3 aPosition;
+in vec3 aColor;
+
+uniform float uTime; //time in sec
+uniform mat4 uModelViewMatrix;
+uniform mat4 uProjectionMatrix;
+uniform mat4 uModelTransformationMatrix;
+
+out vec3 vColor;
+
+void main() {
+  gl_Position = uProjectionMatrix * uModelViewMatrix * uModelTransformationMatrix * vec4(aPosition,1.0);
+  vColor = aColor;
+}
+</script>
+  <!-- Fragment Shader (unchanged from HW3) -->
+  <script id="fragment-shader" type="x-shader/x-fragment">#version 300 es
+precision mediump float;
+in vec3 vColor;
+
+out vec4 fragColor;
+
+void main() {
+  fragColor = vec4(vColor,1.0);
+}
+</script>
+
+  <script src="primitives.js"></script>
+  <script src="transformations.js"></script>
+
+  <script>
+    function createShader(gl, type, source) {
+      let shader = gl.createShader(type);
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        throw new Error(gl.getShaderInfoLog(shader));
+      }
+      return shader;
+    }
+
+    function createProgram(gl, vsSource, fsSource) {
+      let vs = createShader(gl, gl.VERTEX_SHADER, vsSource);
+      let fs = createShader(gl, gl.FRAGMENT_SHADER, fsSource);
+      let prog = gl.createProgram();
+      gl.attachShader(prog, vs);
+      gl.attachShader(prog, fs);
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+        throw new Error(gl.getProgramInfoLog(prog));
+      }
+      return prog;
+    }
+
+    // WebGL setup
+    const canvas = document.getElementById("glcanvas");
+    const gl = canvas.getContext("webgl2");
+    if (!gl) alert("WebGL2 not supported");
+
+    let vertEditor = document.getElementById("vertEditor");
+    let fragEditor = document.getElementById("fragEditor");
+    vertEditor.value = document.getElementById("vertex-shader").textContent;
+    fragEditor.value = document.getElementById("fragment-shader").textContent;
+
+    let program, posLoc, colorLoc, timeLoc, uMVM, uPM, uMTM;
+
+    function initShaderProgram() {
+      try {
+        program = createProgram(gl, vertEditor.value, fragEditor.value);
+        gl.useProgram(program);
+        posLoc = gl.getAttribLocation(program, "aPosition");
+        colorLoc = gl.getAttribLocation(program, "aColor");
+        timeLoc = gl.getUniformLocation(program, "uTime");
+        uMVM = gl.getUniformLocation(program, "uModelViewMatrix");
+        uPM = gl.getUniformLocation(program, "uProjectionMatrix");
+        uMTM = gl.getUniformLocation(program, "uModelTransformationMatrix");
+      } catch (e) { console.error(e); }
+    }
+    initShaderProgram();
+    vertEditor.onkeyup = initShaderProgram;
+    fragEditor.onkeyup = initShaderProgram;
+
+    // -------------------------------------------------------------------
+    // Helper: upload a geometry object {positions,colors,indices} to GL
+    // buffers once, and remember how to draw it.
+    // -------------------------------------------------------------------
+    function uploadMesh(geo) {
+      const vbo = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+      gl.bufferData(gl.ARRAY_BUFFER, geo.positions, gl.STATIC_DRAW);
+
+      const cbo = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, cbo);
+      gl.bufferData(gl.ARRAY_BUFFER, geo.colors, gl.STATIC_DRAW);
+
+      const ibo = gl.createBuffer();
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, geo.indices, gl.STATIC_DRAW);
+
+      return { vbo, cbo, ibo, count: geo.indices.length };
+    }
+
+    function drawMesh(mesh, modelTransform) {
+      gl.uniformMatrix4fv(uMTM, false, modelTransform);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, mesh.vbo);
+      gl.enableVertexAttribArray(posLoc);
+      gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, mesh.cbo);
+      gl.enableVertexAttribArray(colorLoc);
+      gl.vertexAttribPointer(colorLoc, 3, gl.FLOAT, false, 0, 0);
+
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.ibo);
+      gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0);
+    }
+
+    // -------------------------------------------------------------------
+    // Robot arm geometry & dimensions
+    //
+    // Hierarchy (6 levels):
+    //   L1 Base  ->  L2 Lower arm (shoulder)  ->  L3 Upper arm (elbow)
+    //   ->  L4 Wrist (pitch + roll)  ->  L5 Palm  ->  L6 Gripper fingers
+    // -------------------------------------------------------------------
+    const BASE_H = 0.5, BASE_R = 0.9;
+    const LOWER_LEN = 1.6, LOWER_W = 0.45, LOWER_D = 0.45;
+    const UPPER_LEN = 1.35, UPPER_W = 0.35, UPPER_D = 0.35;
+    const PALM_LEN = 0.5, PALM_W = 0.5, PALM_D = 0.25;
+    const FINGER_LEN = 0.55, FINGER_W = 0.12, FINGER_D = 0.2;
+
+    const meshGround = uploadMesh(createBox(5, 0.05, 5, [0.15, 0.15, 0.18]));
+    const meshBase = uploadMesh(createCylinder(BASE_R, BASE_H, 24));
+    const meshLowerArm = uploadMesh(createBox(LOWER_W, LOWER_LEN, LOWER_D, [0.85, 0.25, 0.2]));
+    const meshUpperArm = uploadMesh(createBox(UPPER_W, UPPER_LEN, UPPER_D, [0.9, 0.6, 0.15]));
+    const meshWristHub = uploadMesh(createSphere(0.28, 14, 14));
+    const meshPalm = uploadMesh(createBox(PALM_W, PALM_LEN, PALM_D, [0.2, 0.55, 0.85]));
+    const meshFinger = uploadMesh(createBox(FINGER_W, FINGER_LEN, FINGER_D, [0.8, 0.8, 0.85]));
+
+    // tint the base cylinder a distinct color too
+    (function recolorBase() {
+      const geo = createCylinder(BASE_R, BASE_H, 24);
+      const n = geo.colors.length / 3;
+      for (let i = 0; i < n; i++) { geo.colors[i * 3] = 0.25; geo.colors[i * 3 + 1] = 0.3; geo.colors[i * 3 + 2] = 0.9; }
+      gl.bindBuffer(gl.ARRAY_BUFFER, meshBase.cbo);
+      gl.bufferData(gl.ARRAY_BUFFER, geo.colors, gl.STATIC_DRAW);
+    })();
+
+    // -------------------------------------------------------------------
+    // Joint angles (degrees), driven by the sliders. These are exactly the
+    // "chained movement" controls: changing an upper-chain joint (e.g. the
+    // shoulder) carries every joint below it (elbow, wrist, fingers) along.
+    // -------------------------------------------------------------------
+    const joints = { base: 0, shoulder: 25, elbow: -60, wristPitch: 20, wristRoll: 0, gripper: 40 };
+
+    const sliderIds = {
+      base: "jBase", shoulder: "jShoulder", elbow: "jElbow",
+      wristPitch: "jWristPitch", wristRoll: "jWristRoll", gripper: "jGripper"
+    };
+    const sliders = {};
+    for (const key in sliderIds) {
+      sliders[key] = document.getElementById(sliderIds[key]);
+      sliders[key].value = joints[key];
+      sliders[key].oninput = () => { joints[key] = Number(sliders[key].value); };
+    }
+
+    const defaultJoints = { ...joints };
+    document.getElementById("resetBtn").onclick = () => {
+      Object.assign(joints, defaultJoints);
+      for (const key in sliders) sliders[key].value = joints[key];
+    };
+
+    let autoAnimate = false;
+    const animateBtn = document.getElementById("animateBtn");
+    animateBtn.onclick = () => {
+      autoAnimate = !autoAnimate;
+      animateBtn.classList.toggle("active", autoAnimate);
+      for (const key in sliders) sliders[key].disabled = autoAnimate;
+    };
+
+    const deg2rad = d => d * Math.PI / 180;
+
+    // Returns the joint angles actually used to pose the arm this frame:
+    // either straight from the sliders, or a scripted wave animation.
+    function currentPose(t) {
+      if (!autoAnimate) return joints;
+      return {
+        base: 45 * Math.sin(t * 0.6),
+        shoulder: 20 + 25 * Math.sin(t * 0.9),
+        elbow: -70 + 35 * Math.sin(t * 1.3 + 1.0),
+        wristPitch: 30 * Math.sin(t * 1.7 + 2.0),
+        wristRoll: 60 * Math.sin(t * 1.1),
+        gripper: 50 + 45 * Math.sin(t * 2.2)
+      };
+    }
+
+    // Mouse and keyboard interactions (rotate the whole scene, move the camera)
+    let mouseDown = false, lastX, lastY, sceneRotX = 0, sceneRotY = 0;
+    let camX = 0, camY = -2.2, camZ = -8;
+
+    canvas.addEventListener('mousedown', e => { mouseDown = true; lastX = e.clientX; lastY = e.clientY; });
+    canvas.addEventListener('mouseup', () => mouseDown = false);
+    canvas.addEventListener('mousemove', e => {
+      if (!mouseDown) return;
+      let dx = e.clientX - lastX;
+      let dy = e.clientY - lastY;
+      sceneRotY += dx * 0.01;
+      sceneRotX += dy * 0.01;
+      lastX = e.clientX; lastY = e.clientY;
+    });
+
+    document.addEventListener('keydown', e => {
+      const step = 0.2;
+      switch (e.key) {
+        case 'ArrowUp': camY -= step; break;
+        case 'ArrowDown': camY += step; break;
+        case 'ArrowLeft': camX += step; break;
+        case 'ArrowRight': camX -= step; break;
+        case 'w': camZ += step; break;
+        case 's': camZ -= step; break;
+      }
+    });
+
+    // Projection setup
+    let fov = Math.PI / 4, aspect = canvas.width / canvas.height, zNear = 0.1, zFar = 100;
+    let orthoSize = 3;
+    let projPerspective = perspective(fov, aspect, zNear, zFar);
+    let projOrtho = matMul(
+      box2Cube(-orthoSize * aspect, orthoSize * aspect, -orthoSize, orthoSize, zNear, zFar),
+      flipZ()
+    );
+    let proj = projPerspective;
+    document.getElementById("projToggleBtn").onclick = () => {
+      proj = (proj === projOrtho) ? projPerspective : projOrtho;
+    };
+
+    let startTime = Date.now();
+
+    function render() {
+      gl.enable(gl.DEPTH_TEST);
+      gl.clearColor(0, 0, 0, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+      // scene rotation matrix from mouse drag (view-only, shared by everything)
+      let cx = Math.cos(sceneRotY), sx = Math.sin(sceneRotY);
+      let cy = Math.cos(sceneRotX), sy = Math.sin(sceneRotX);
+      let rotX = [1, 0, 0, 0, 0, cy, sy, 0, 0, -sy, cy, 0, 0, 0, 0, 1];
+      let rotY = [cx, 0, -sx, 0, 0, 1, 0, 0, sx, 0, cx, 0, 0, 0, 0, 1];
+      let sceneRotation = multiplyMat4(rotY, rotX);
+
+      let modelViewMatrix = mat4Translate(mat4Identity(), [camX, camY, camZ]);
+      let t = (Date.now() - startTime) / 1000.0;
+
+      gl.uniform1f(timeLoc, t);
+      gl.uniformMatrix4fv(uPM, false, proj);
+      gl.uniformMatrix4fv(uMVM, false, modelViewMatrix);
+
+      const pose = currentPose(t);
+
+      // ---------------- forward kinematics: build the joint chain --------
+      // J0: ground / world root (fixed)
+      const world = sceneRotation;
+
+      // L1 - Base: swivels about the vertical (Y) axis, sits at the origin.
+      const J_base = matMul(world, mat4RotateY(mat4Identity(), deg2rad(pose.base)));
+      drawMesh(meshGround, world);
+      drawMesh(meshBase, matMul(J_base, mat4TranslationMatrix([0, BASE_H / 2, 0])));
+
+      // L2 - Lower arm / shoulder: pivots about X at the top of the base.
+      const J_shoulder = matMul(
+        J_base,
+        mat4TranslationMatrix([0, BASE_H, 0]),
+        mat4RotateX(mat4Identity(), deg2rad(pose.shoulder))
+      );
+      drawMesh(meshLowerArm, matMul(J_shoulder, mat4TranslationMatrix([0, LOWER_LEN / 2, 0])));
+
+      // L3 - Upper arm / elbow: pivots about X at the end of the lower arm.
+      const J_elbow = matMul(
+        J_shoulder,
+        mat4TranslationMatrix([0, LOWER_LEN, 0]),
+        mat4RotateX(mat4Identity(), deg2rad(pose.elbow))
+      );
+      drawMesh(meshUpperArm, matMul(J_elbow, mat4TranslationMatrix([0, UPPER_LEN / 2, 0])));
+
+      // L4 - Wrist: pitches about X then rolls about Y, at the end of the upper arm.
+      const J_wrist = matMul(
+        J_elbow,
+        mat4TranslationMatrix([0, UPPER_LEN, 0]),
+        mat4RotateX(mat4Identity(), deg2rad(pose.wristPitch)),
+        mat4RotateY(mat4Identity(), deg2rad(pose.wristRoll))
+      );
+      drawMesh(meshWristHub, J_wrist);
+
+      // L5 - Palm: rigidly attached in front of the wrist hub.
+      const J_palm = matMul(J_wrist, mat4TranslationMatrix([0, PALM_LEN / 2, 0]));
+      drawMesh(meshPalm, J_palm);
+      const J_palmEnd = matMul(J_wrist, mat4TranslationMatrix([0, PALM_LEN, 0]));
+
+      // L6 - Gripper fingers: two children of the palm that translate apart
+      // to open/close (a translation-based movement, independent of the
+      // rotation joints above it in the chain).
+      const openAmt = 0.02 + (pose.gripper / 100) * 0.3;
+      const J_finger1 = matMul(J_palmEnd, mat4TranslationMatrix([openAmt, FINGER_LEN / 2, 0]));
+      const J_finger2 = matMul(J_palmEnd, mat4TranslationMatrix([-openAmt, FINGER_LEN / 2, 0]));
+      drawMesh(meshFinger, J_finger1);
+      drawMesh(meshFinger, J_finger2);
+    }
+
+    window.onload = function () {
+      setInterval(render, 30);
+    }
+
+  </script>
+</body>
+
+</html>
